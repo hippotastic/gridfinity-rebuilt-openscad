@@ -16,14 +16,22 @@ use <src/helpers/grid.scad>
 // ===== PARAMETERS ===== //
 
 /* [Setup Parameters] */
-$fa = 8;
-$fs = 0.25;
+$fa = 2;
+$fs = 0.10;
 
 /* [General Settings] */
 // number of bases along x-axis
 gridx = 1;
 // number of bases along y-axis
 gridy = 1;
+// height removed from the top of the baseplate
+top_cutoff = 0.50; // [0:0.05:5]
+// extra material added below the baseplate
+bottom_padding = 0.35; // [0:0.05:20]
+// margin removed from each outside edge
+outer_margin = 0.10; // [0:0.01:0.50]
+// outside corner radius
+corner_radius = 4; // [0:0.05:4]
 
 /* [Screw Together Settings - Defaults work for M3 and 4-40] */
 // screw diameter
@@ -51,7 +59,7 @@ fity = 0; // [-1:0.1:1]
 /* [Styles] */
 
 // baseplate styles
-style_plate = 3; // [0: thin, 1:weighted, 2:skeletonized, 3: screw together, 4: screw together minimal]
+style_plate = 3; // [0: thin, 1:weighted, 2:skeletonized, 3: screw together, 4: screw together minimal, 5: thin snap together]
 
 
 // hole styles
@@ -100,11 +108,28 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
         "Must have positive x grid amount!");
     assert(grid_size_bases.y > 0 || min_size_mm.y > 0,
         "Must have positive y grid amount!");
+    assert(top_cutoff >= 0,
+        "top_cutoff may not be negative.");
+    assert(bottom_padding >= 0,
+        "bottom_padding may not be negative.");
+    assert(outer_margin >= 0,
+        "outer_margin may not be negative.");
+    assert(corner_radius >= 0,
+        "corner_radius may not be negative.");
 
     additional_height = calculate_offset(sp, hole_options[1], sh);
 
     // Final height of the baseplate. In mm.
     baseplate_height_mm = additional_height + BASEPLATE_HEIGHT;
+    assert(top_cutoff < baseplate_height_mm,
+        "top_cutoff must be smaller than the baseplate height.");
+    render_height_limit = baseplate_height_mm - top_cutoff;
+    // The Gridfinity baseplate profile includes 0.35 mm of bottom clearance.
+    built_in_bottom_padding = BASEPLATE_HEIGHT - _BASEPLATE_PROFILE[3].y;
+    bottom_padding_delta = bottom_padding - built_in_bottom_padding;
+    final_height_mm = render_height_limit + bottom_padding_delta;
+    assert(final_height_mm > 0,
+        "bottom_padding is too small for the selected top_cutoff.");
 
     // Final size in number of bases
     grid_size = [for (i = [0:1])
@@ -113,15 +138,28 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
     // Final size of the base before padding. In mm.
     grid_size_mm = concat(grid_size * length, [baseplate_height_mm]);
 
-    // Final size, including padding. In mm.
-    size_mm = [
+    // Final nominal size, before shrinking the outside edges for print clearance.
+    nominal_size_mm = [
         max(grid_size_mm.x, min_size_mm.x),
         max(grid_size_mm.y, min_size_mm.y),
-        baseplate_height_mm
+        render_height_limit
+    ];
+    assert(2*outer_margin < nominal_size_mm.x && 2*outer_margin < nominal_size_mm.y,
+        "outer_margin is too large for the baseplate size.");
+
+    // Final size, including padding and outside edge margin. In mm.
+    size_mm = [
+        nominal_size_mm.x - 2*outer_margin,
+        nominal_size_mm.y - 2*outer_margin,
+        nominal_size_mm.z
     ];
 
     // Amount of padding needed to fit to a specific drawer size. In mm.
-    padding_mm = size_mm - grid_size_mm;
+    padding_mm = [
+        nominal_size_mm.x - grid_size_mm.x,
+        nominal_size_mm.y - grid_size_mm.y,
+        0
+    ];
 
     is_padding_needed = padding_mm != [0, 0, 0];
 
@@ -129,12 +167,11 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
     // -1 : 1 -> 0 : 1
     fit_percent_positive = [for (i = [0:1]) (fit_offset[i] + 1) / 2];
 
-    padding_start_point = -grid_size_mm/2 -
-        [
-            padding_mm.x * (1 - fit_percent_positive.x),
-            padding_mm.y * (1 - fit_percent_positive.y),
-            -grid_size_mm.z/2
-        ];
+    padding_start_point = [
+        -grid_size_mm.x/2 - padding_mm.x * (1 - fit_percent_positive.x),
+        -grid_size_mm.y/2 - padding_mm.y * (1 - fit_percent_positive.y),
+        0
+    ] + [outer_margin, outer_margin, 0];
 
     corner_points = [
         padding_start_point + [size_mm.x, size_mm.y, 0],
@@ -144,7 +181,7 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
     ];
 
     echo(str("Number of Grids per axes (X, Y)]: ", grid_size));
-    echo(str("Final size (in mm): ", size_mm));
+    echo(str("Final size (in mm): ", [size_mm.x, size_mm.y, final_height_mm]));
     if (is_padding_needed) {
         echo(str("Padding +X (in mm): ", padding_mm.x * fit_percent_positive.x));
         echo(str("Padding -X (in mm): ", padding_mm.x * (1 - fit_percent_positive.x)));
@@ -153,75 +190,91 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
     }
 
     screw_together = sp == 3 || sp == 4;
-    minimal = sp == 0 || sp == 4;
+    snap_together = sp == 5;
+    minimal = sp == 0 || sp == 4 || snap_together;
 
-    difference() {
-        union() {
-            // Baseplate itself
-            difference() {
-                translate(padding_start_point)
-                cube(size_mm);
-                // Replicated Single Baseplate piece
-                pattern_grid(grid_size, [length, length], true, true) {
-                    if (minimal) {
-                        translate([0, 0, -TOLLERANCE/2])
-                        baseplate_cutter([length, length], baseplate_height_mm+TOLLERANCE);
-                    } else {
-                        translate([0, 0, additional_height+TOLLERANCE/2])
-                        baseplate_cutter([length, length]);
+    _apply_bottom_padding(bottom_padding_delta, padding_start_point, size_mm) {
+        difference() {
+            union() {
+                // Baseplate itself
+                difference() {
+                    translate(padding_start_point)
+                    cube([size_mm.x, size_mm.y, baseplate_height_mm]);
+                    // Replicated Single Baseplate piece
+                    pattern_grid(grid_size, [length, length], true, true) {
+                        if (minimal) {
+                            translate([0, 0, -TOLLERANCE/2])
+                            baseplate_cutter([length, length], baseplate_height_mm+TOLLERANCE);
+                        } else {
+                            translate([0, 0, additional_height+TOLLERANCE/2])
+                            baseplate_cutter([length, length]);
 
-                        // Bottom/through pattern for the solid baseplates.
-                        if (sp == 1) {
-                            cutter_weight();
-                        } else if (sp == 2 || sp == 3) {
-                            translate([0,0,-TOLLERANCE])
-                            linear_extrude(additional_height + (2 * TOLLERANCE))
-                            profile_skeleton();
-                        }
+                            // Bottom/through pattern for the solid baseplates.
+                            if (sp == 1) {
+                                cutter_weight();
+                            } else if (sp == 2 || sp == 3) {
+                                translate([0,0,-TOLLERANCE])
+                                linear_extrude(additional_height + (2 * TOLLERANCE))
+                                profile_skeleton();
+                            }
 
-                        // Add holes to the solid baseplates.
-                        hole_pattern(){
-                            // Manget hole
-                            translate([0, 0, additional_height+TOLLERANCE])
-                            mirror([0, 0, 1])
-                            block_base_hole(hole_options);
+                            // Add holes to the solid baseplates.
+                            hole_pattern(){
+                                // Magnet hole
+                                translate([0, 0, additional_height+TOLLERANCE])
+                                mirror([0, 0, 1])
+                                block_base_hole(hole_options);
 
-                            translate([0,0,-TOLLERANCE])
-                            if (sh == 1) {
-                                cutter_countersink();
-                            } else if (sh == 2) {
-                                cutter_counterbore();
+                                translate([0,0,-TOLLERANCE])
+                                if (sh == 1) {
+                                    cutter_countersink();
+                                } else if (sh == 2) {
+                                    cutter_counterbore();
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Round the outside corners (Including Padding)
-        for(i = [0:len(corner_points) - 1]) {
+            // Round the outside corners (Including Padding)
+            for(i = [0:len(corner_points) - 1]) {
                 point = corner_points[i];
                 translate([
-                point.x + (BASEPLATE_OUTER_RADIUS * -sign(point.x)),
-                point.y + (BASEPLATE_OUTER_RADIUS * -sign(point.y)),
-                0
-            ])
-            rotate([0, 0, i*90])
-            square_baseplate_corner(additional_height, true);
-        }
+                    point.x + (corner_radius * -sign(point.x)),
+                    point.y + (corner_radius * -sign(point.y)),
+                    0
+                ])
+                rotate([0, 0, i*90])
+                square_baseplate_corner(additional_height, true, corner_radius);
+            }
 
-        if (screw_together) {
-            translate([0, 0, additional_height/2])
-            cutter_screw_together(grid_size.x, grid_size.y, length);
+            if (screw_together) {
+                translate([0, 0, additional_height/2])
+                cutter_screw_together(grid_size.x, grid_size.y, length);
+            }
+
+            if (snap_together) {
+                cutter_snap_together(grid_size.x, grid_size.y, length);
+            }
+
+            if (render_height_limit < baseplate_height_mm) {
+                translate([padding_start_point.x - TOLLERANCE, padding_start_point.y - TOLLERANCE, render_height_limit])
+                cube([
+                    size_mm.x + 2*TOLLERANCE,
+                    size_mm.y + 2*TOLLERANCE,
+                    baseplate_height_mm - render_height_limit + TOLLERANCE
+                ]);
+            }
         }
     }
 }
 
 function calculate_offset(style_plate, enable_magnet, style_hole) =
-    assert(style_plate >=0 && style_plate <=4)
+    assert(style_plate >=0 && style_plate <=5)
     let (screw_together = style_plate == 3 || style_plate == 4)
     screw_together ? 6.75 :
-    style_plate==0 ? 0 :
+    (style_plate==0 || style_plate==5) ? 0 :
     style_plate==1 ? bp_h_bot :
     calculate_offset_skeletonized(enable_magnet, style_hole);
 
@@ -277,18 +330,20 @@ module cutter_counterbore(){
  * @param height Baseplate's height, excluding lip and clearance height.
  * @param subtract If the corner should be scaled to allow subtraction.
  */
-module square_baseplate_corner(height=0, subtract=false) {
+module square_baseplate_corner(height=0, subtract=false, radius=BASEPLATE_OUTER_RADIUS) {
     assert(height >= 0);
     assert(is_bool(subtract));
+    assert(radius >= 0);
 
     subtract_ammount = subtract ? TOLLERANCE : 0;
 
-    translate([0, 0, -subtract_ammount])
-    linear_extrude(height + BASEPLATE_HEIGHT + (2 * subtract_ammount))
-    difference() {
-        square(BASEPLATE_OUTER_RADIUS + subtract_ammount , center=false);
-        // TOLLERANCE needed to prevent a gap
-        circle(r=BASEPLATE_OUTER_RADIUS - TOLLERANCE);
+    if (radius > 0) {
+        translate([0, 0, -subtract_ammount])
+        linear_extrude(height + BASEPLATE_HEIGHT + (2 * subtract_ammount))
+        difference() {
+            square(radius + subtract_ammount , center=false);
+            circle(r=radius);
+        }
     }
 }
 
@@ -329,3 +384,174 @@ module cutter_screw_together(gx, gy, size = l_grid) {
         cylinder(h=size/2, d=d_screw, center = true);
     }
 }
+
+module _apply_bottom_padding(bottom_padding_delta, start_point, size) {
+    assert(is_num(bottom_padding_delta));
+    assert(is_list(start_point) && len(start_point) == 3);
+    assert(is_list(size) && len(size) == 3);
+
+    if (bottom_padding_delta < 0) {
+        trim_height = -bottom_padding_delta;
+
+        translate([0, 0, -trim_height])
+        difference() {
+            children();
+
+            translate([start_point.x - TOLLERANCE, start_point.y - TOLLERANCE, -TOLLERANCE])
+            cube([
+                size.x + 2*TOLLERANCE,
+                size.y + 2*TOLLERANCE,
+                trim_height + TOLLERANCE
+            ]);
+        }
+    } else if (bottom_padding_delta > 0) {
+        translate([0, 0, bottom_padding_delta])
+        union() {
+            children();
+
+            // Reuse the first printable layer as the extrusion footprint for added bottom padding.
+            translate([0, 0, -bottom_padding_delta])
+            linear_extrude(bottom_padding_delta + TOLLERANCE)
+            projection(cut=true)
+            translate([0, 0, -LAYER_HEIGHT])
+            children();
+        }
+    } else {
+        children();
+    }
+}
+
+module cutter_snap_together(gx, gy, size = l_grid) {
+    assert(gx >= 1);
+    assert(gy >= 1);
+
+    if (gx > 1) {
+        for (x = [1:gx-1]) {
+            translate([(-gx/2 + x) * size, -gy * size/2, 0])
+            cutter_snap_connector_edge();
+
+            translate([(-gx/2 + x) * size, gy * size/2, 0])
+            rotate([0, 0, 180])
+            cutter_snap_connector_edge();
+        }
+    }
+
+    if (gy > 1) {
+        for (y = [1:gy-1]) {
+            translate([-gx * size/2, (-gy/2 + y) * size, 0])
+            rotate([0, 0, -90])
+            cutter_snap_connector_edge();
+
+            translate([gx * size/2, (-gy/2 + y) * size, 0])
+            rotate([0, 0, 90])
+            cutter_snap_connector_edge();
+        }
+    }
+}
+
+module cutter_snap_connector_edge() {
+    // Based on the snap connector from this URL:
+    // https://www.printables.com/model/430144-gridfinity-base-with-snap-connectors
+    // The 2D profile below matches the reference connector cutout before it is rotated into
+    // place on each outside edge. In this local sketch, X goes inward from the edge and Y is
+    // height above the bottom of the baseplate.
+    slot_width = 4.2 + 2*TOLLERANCE;
+
+    floor_z = 0.95;
+    top_cap_z = floor_z + 1.85;
+    top_z = max(BASEPLATE_HEIGHT - top_cutoff, top_cap_z) + TOLLERANCE;
+
+    // Extend the cutter mouth past the nominal edge so smaller outer_margin values do not leave
+    // a blocking wall in front of the connector opening.
+    entry_x = -0.10;
+    cutout_depth = 2.65;
+
+    // Unfilleted sketch points from the reference profile. The two rounded transitions are
+    // generated from these corners below instead of storing arc centers and tangent angles.
+    lower_step_x = 0.90;
+    lower_step_top = [lower_step_x, floor_z + 0.555];
+    inner_corner = [1.65, floor_z + 0.92];
+    top_corner = [0.765, top_cap_z];
+
+    arc_steps = 12;
+    bottom_fillet = fillet_arc_points(
+        lower_step_top,
+        inner_corner,
+        top_corner,
+        0.60,
+        arc_steps
+    );
+    top_fillet = fillet_arc_points(
+        inner_corner,
+        top_corner,
+        [0.10, top_cap_z],
+        0.15,
+        6
+    );
+
+    // Local 2D cutter profile, before rotation/extrusion. The the closed outline is subtracted
+    // from the baseplate.
+    //
+    //     Y
+    //     ^
+    //     |   +----------------------+  top_z
+    //     |   |                      |   
+    //     |   +_______               |  top_cap_z
+    //     |            \             |  top_fillet, R0.15
+    //     |             \            |
+    //     |              \           |
+    //     |               )          |  bottom_fillet, R0.60
+    //     |             .'           |
+    //     |          .'              |  lower_step_top
+    //     |          |               |
+    //     |          +---------------+  floor_z
+    //     |
+    //     +----------------------------------------------> X inward
+    //         entry_x                cutout_depth
+    //
+    // The connector-facing opening starts at x=0.10; entry_x only clears material in front
+    // of that opening when outer_margin is smaller than 0.10 mm.
+    // The polygon walks clockwise around the cutter cross-section.
+    profile = concat([
+        [entry_x, top_cap_z],
+        [entry_x, top_z],
+        [cutout_depth, top_z],
+        [cutout_depth, floor_z],
+        [lower_step_x, floor_z],
+        lower_step_top
+    ], bottom_fillet, top_fillet, [
+        [entry_x, top_cap_z]
+    ]);
+
+    translate([-slot_width/2, 0, 0])
+    rotate([90, 0, 90])
+    linear_extrude(slot_width)
+    polygon(profile);
+}
+
+function arc_points(center, radius, start_angle, end_angle, steps) = [
+    for (i = [0:steps])
+    let(angle = start_angle + (end_angle - start_angle) * i / steps)
+    center + radius * [cos(angle), sin(angle)]
+];
+
+function fillet_arc_points(prev, corner, next, radius, steps) =
+    let(
+        incoming = unit_vector(prev - corner),
+        outgoing = unit_vector(next - corner),
+        angle = acos(clamp(dot_product(incoming, outgoing), -1, 1)),
+        tangent_distance = radius / tan(angle/2),
+        start_point = corner + incoming * tangent_distance,
+        end_point = corner + outgoing * tangent_distance,
+        center = corner + unit_vector(incoming + outgoing) * radius / sin(angle/2),
+        start_angle = atan2(start_point.y - center.y, start_point.x - center.x),
+        end_angle = atan2(end_point.y - center.y, end_point.x - center.x),
+        // Fillets use the short arc between tangent points; the long arc cuts through the profile.
+        end_angle_short = start_angle + short_angle_delta(end_angle - start_angle)
+    )
+    arc_points(center, radius, start_angle, end_angle_short, steps);
+
+function unit_vector(v) = v / sqrt(dot_product(v, v));
+function dot_product(a, b) = a.x*b.x + a.y*b.y;
+function clamp(value, min_value, max_value) = min(max(value, min_value), max_value);
+function short_angle_delta(delta) = delta > 180 ? delta - 360 : delta < -180 ? delta + 360 : delta;
