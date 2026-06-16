@@ -28,6 +28,8 @@ gridy = 1;
 top_cutoff = 0.50; // [0:0.05:5]
 // extra material added below the baseplate
 bottom_padding = 0.35; // [0:0.05:20]
+// use a 45 degree chamfer to reduce bottom padding material in thin/minimal styles
+efficient_bottom_padding = true;
 // margin removed from each outside edge
 outer_margin = 0.10; // [0:0.01:0.50]
 /* [Filled Corners - Reduces radius of selected corners] */
@@ -115,6 +117,8 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
         "top_cutoff may not be negative.");
     assert(bottom_padding >= 0,
         "bottom_padding may not be negative.");
+    assert(is_bool(efficient_bottom_padding),
+        "efficient_bottom_padding must be true or false.");
     assert(outer_margin >= 0,
         "outer_margin may not be negative.");
     assert(is_bool(fill_top_left_corner),
@@ -210,7 +214,15 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
     snap_together = sp == 5;
     minimal = sp == 0 || sp == 4 || snap_together;
 
-    _apply_bottom_padding(bottom_padding_delta, padding_start_point, size_mm) {
+    _apply_bottom_padding(
+        bottom_padding_delta,
+        padding_start_point,
+        size_mm,
+        efficient_bottom_padding && minimal,
+        grid_size,
+        length,
+        baseplate_height_mm
+    ) {
         difference() {
             union() {
                 // Baseplate itself
@@ -403,10 +415,22 @@ module cutter_screw_together(gx, gy, size = l_grid) {
     }
 }
 
-module _apply_bottom_padding(bottom_padding_delta, start_point, size) {
+module _apply_bottom_padding(
+    bottom_padding_delta,
+    start_point,
+    size,
+    efficient=false,
+    grid_size=[0, 0],
+    grid_length=l_grid,
+    baseplate_height=BASEPLATE_HEIGHT
+) {
     assert(is_num(bottom_padding_delta));
     assert(is_list(start_point) && len(start_point) == 3);
     assert(is_list(size) && len(size) == 3);
+    assert(is_bool(efficient));
+    assert(is_list(grid_size) && len(grid_size) == 2);
+    assert(grid_length > 0);
+    assert(baseplate_height >= BASEPLATE_HEIGHT);
 
     if (bottom_padding_delta < 0) {
         trim_height = -bottom_padding_delta;
@@ -427,16 +451,117 @@ module _apply_bottom_padding(bottom_padding_delta, start_point, size) {
         union() {
             children();
 
-            // Reuse the first printable layer as the extrusion footprint for added bottom padding.
-            translate([0, 0, -bottom_padding_delta])
-            linear_extrude(bottom_padding_delta + TOLLERANCE)
-            projection(cut=true)
-            translate([0, 0, -LAYER_HEIGHT])
+            _extrude_bottom_padding(bottom_padding_delta, efficient, grid_size, grid_length, baseplate_height)
             children();
         }
     } else {
         children();
     }
+}
+
+module _extrude_bottom_padding(
+    padding_height,
+    efficient=false,
+    grid_size=[0, 0],
+    grid_length=l_grid,
+    baseplate_height=BASEPLATE_HEIGHT
+) {
+    assert(padding_height > 0);
+    assert(is_bool(efficient));
+    assert(is_list(grid_size) && len(grid_size) == 2);
+    assert(grid_length > 0);
+    assert(baseplate_height >= BASEPLATE_HEIGHT);
+
+    if (efficient) {
+        // At the padding boundary, the Gridfinity baseplate profile leaves 5 mm ribs between
+        // adjacent grid-cell openings. Expanding both openings equally leaves 0.5 mm ribs.
+        built_in_bottom_clearance = BASEPLATE_HEIGHT - _BASEPLATE_PROFILE[3].y;
+        rib_width_at_padding = BASEPLATE_OUTER_DIAMETER
+            - 2*BASEPLATE_INNER_RADIUS
+            - 2*built_in_bottom_clearance;
+        min_rib_width = 0.5;
+        max_chamfer_height = max(0, (rib_width_at_padding - min_rib_width) / 2);
+
+        // 45 degree chamfer: horizontal growth of each cell opening equals vertical height.
+        chamfer_height = min(max_chamfer_height, padding_height);
+        straight_height = padding_height - chamfer_height;
+
+        // The chamfer cutters overlap at grid intersections. Pre-rendering only the bottom
+        // padding boolean avoids OpenCSG preview artifacts without rendering the whole baseplate.
+        render()
+        difference() {
+            translate([0, 0, -padding_height])
+            linear_extrude(padding_height + TOLLERANCE)
+            _bottom_padding_footprint()
+            children();
+
+            union() {
+                if (straight_height > 0) {
+                    translate([0, 0, -padding_height - TOLLERANCE])
+                    linear_extrude(straight_height + 2*TOLLERANCE)
+                    _bottom_padding_grid_holes(grid_size, grid_length, baseplate_height, chamfer_height);
+                }
+
+                if (chamfer_height > 0) {
+                    _bottom_padding_grid_hole_chamfers(grid_size, grid_length, baseplate_height, chamfer_height);
+                }
+            }
+        }
+    } else {
+        translate([0, 0, -padding_height])
+        linear_extrude(padding_height + TOLLERANCE)
+        _bottom_padding_footprint()
+        children();
+    }
+}
+
+module _bottom_padding_footprint(inset=0) {
+    assert(inset >= 0);
+
+    offset(delta=-inset)
+    projection(cut=true)
+    translate([0, 0, -LAYER_HEIGHT])
+    children();
+}
+
+module _bottom_padding_grid_hole_chamfers(grid_size, grid_length, baseplate_height, chamfer_height) {
+    assert(is_list(grid_size) && len(grid_size) == 2);
+    assert(grid_length > 0);
+    assert(baseplate_height >= BASEPLATE_HEIGHT);
+    assert(chamfer_height >= 0);
+
+    pattern_grid(grid_size, [grid_length, grid_length], true, true) {
+        hull() {
+            translate([0, 0, -chamfer_height])
+            linear_extrude(TOLLERANCE)
+            _bottom_padding_cell_hole(grid_length, baseplate_height, chamfer_height);
+
+            translate([0, 0, -TOLLERANCE])
+            linear_extrude(TOLLERANCE)
+            _bottom_padding_cell_hole(grid_length, baseplate_height);
+        }
+    }
+}
+
+module _bottom_padding_grid_holes(grid_size, grid_length, baseplate_height, inset=0) {
+    assert(is_list(grid_size) && len(grid_size) == 2);
+    assert(grid_length > 0);
+    assert(baseplate_height >= BASEPLATE_HEIGHT);
+    assert(inset >= 0);
+
+    pattern_grid(grid_size, [grid_length, grid_length], true, true)
+    _bottom_padding_cell_hole(grid_length, baseplate_height, inset);
+}
+
+module _bottom_padding_cell_hole(grid_length, baseplate_height, inset=0) {
+    assert(grid_length > 0);
+    assert(baseplate_height >= BASEPLATE_HEIGHT);
+    assert(inset >= 0);
+
+    offset(delta=inset)
+    projection(cut=true)
+    translate([0, 0, -LAYER_HEIGHT])
+    baseplate_cutter([grid_length, grid_length], baseplate_height + TOLLERANCE);
 }
 
 module cutter_snap_together(gx, gy, size = l_grid) {
