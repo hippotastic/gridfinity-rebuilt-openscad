@@ -30,8 +30,11 @@ top_cutoff = 0.50; // [0:0.05:5]
 bottom_padding = 0.35; // [0:0.05:20]
 // margin removed from each outside edge
 outer_margin = 0.10; // [0:0.01:0.50]
-// outside corner radius
-corner_radius = 4; // [0:0.05:4]
+/* [Filled Corners - Reduces radius of selected corners] */
+fill_top_left_corner = false;
+fill_top_right_corner = false;
+fill_bottom_right_corner = false;
+fill_bottom_left_corner = false;
 
 /* [Screw Together Settings - Defaults work for M3 and 4-40] */
 // screw diameter
@@ -114,8 +117,14 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
         "bottom_padding may not be negative.");
     assert(outer_margin >= 0,
         "outer_margin may not be negative.");
-    assert(corner_radius >= 0,
-        "corner_radius may not be negative.");
+    assert(is_bool(fill_top_left_corner),
+        "fill_top_left_corner must be true or false.");
+    assert(is_bool(fill_top_right_corner),
+        "fill_top_right_corner must be true or false.");
+    assert(is_bool(fill_bottom_right_corner),
+        "fill_bottom_right_corner must be true or false.");
+    assert(is_bool(fill_bottom_left_corner),
+        "fill_bottom_left_corner must be true or false.");
 
     additional_height = calculate_offset(sp, hole_options[1], sh);
 
@@ -173,11 +182,19 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
         0
     ] + [outer_margin, outer_margin, 0];
 
+    // Clockwise from top left, matching the filled-corner UI order.
     corner_points = [
-        padding_start_point + [size_mm.x, size_mm.y, 0],
         padding_start_point + [0, size_mm.y, 0],
-        padding_start_point,
+        padding_start_point + [size_mm.x, size_mm.y, 0],
         padding_start_point + [size_mm.x, 0, 0],
+        padding_start_point,
+    ];
+    filled_corner_radius = 0.5;
+    corner_radii = [
+        fill_top_left_corner ? filled_corner_radius : BASEPLATE_OUTER_RADIUS,
+        fill_top_right_corner ? filled_corner_radius : BASEPLATE_OUTER_RADIUS,
+        fill_bottom_right_corner ? filled_corner_radius : BASEPLATE_OUTER_RADIUS,
+        fill_bottom_left_corner ? filled_corner_radius : BASEPLATE_OUTER_RADIUS
     ];
 
     echo(str("Number of Grids per axes (X, Y)]: ", grid_size));
@@ -240,13 +257,14 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
             // Round the outside corners (Including Padding)
             for(i = [0:len(corner_points) - 1]) {
                 point = corner_points[i];
+                radius = corner_radii[i];
                 translate([
-                    point.x + (corner_radius * -sign(point.x)),
-                    point.y + (corner_radius * -sign(point.y)),
+                    point.x + (radius * -sign(point.x)),
+                    point.y + (radius * -sign(point.y)),
                     0
                 ])
-                rotate([0, 0, i*90])
-                square_baseplate_corner(additional_height, true, corner_radius);
+                rotate([0, 0, 90 - i*90])
+                square_baseplate_corner(additional_height, true, radius);
             }
 
             if (screw_together) {
