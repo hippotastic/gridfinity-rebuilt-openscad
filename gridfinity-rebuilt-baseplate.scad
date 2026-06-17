@@ -12,6 +12,8 @@ use <src/core/gridfinity-rebuilt-utility.scad>
 use <src/core/gridfinity-rebuilt-holes.scad>
 use <src/helpers/generic-helpers.scad>
 use <src/helpers/grid.scad>
+include <src/core/gridfinity-baseplate-thin-snap-top.scad>
+include <src/core/gridfinity-baseplate-thin-snap-side.scad>
 
 // ===== PARAMETERS ===== //
 
@@ -64,7 +66,14 @@ fity = 0; // [-1:0.1:1]
 /* [Styles] */
 
 // baseplate styles
-style_plate = 3; // [0: thin, 1:weighted, 2:skeletonized, 3: screw together, 4: screw together minimal, 5: thin snap together]
+style_plate = 3; // [0: thin, 1:weighted, 2:skeletonized, 3: screw together, 4: screw together minimal, 5: thin snap together top, 6: thin snap together side]
+
+// render the baseplate body
+render_baseplate = true;
+// render a standalone thin snap together side connector
+render_connector = false;
+// render the standalone thin snap together side connector cutout
+render_cutout = false;
 
 
 // hole styles
@@ -82,8 +91,31 @@ hole_options = bundle_hole_options(refined_hole=false, magnet_hole=enable_magnet
 
 // ===== IMPLEMENTATION ===== //
 
-color("tomato")
-gridfinityBaseplate([gridx, gridy], l_grid, [distancex, distancey], style_plate, hole_options, style_hole, [fitx, fity]);
+if (render_baseplate) {
+    color("tomato")
+    gridfinityBaseplate([gridx, gridy], l_grid, [distancex, distancey], style_plate, hole_options, style_hole, [fitx, fity]);
+}
+
+if (render_connector) {
+    color("lightgray")
+    translate(_thin_snap_side_connector_standalone_translation())
+    _thin_snap_side_connector();
+}
+
+if (render_cutout) {
+    color("cornflowerblue", 0.4)
+    translate(_thin_snap_side_cutout_standalone_translation())
+    _thin_snap_side_connector_display(cutout=true);
+}
+
+if ($preview && render_connector && render_cutout) {
+    color("lightgray")
+    _thin_snap_side_connector();
+
+    color("cornflowerblue", 0.4)
+    translate([0, 0, _thin_snap_side_cutout_overlay_z_offset()])
+    _thin_snap_side_connector_display(cutout=true);
+}
 
 // ===== CONSTRUCTION ===== //
 
@@ -211,7 +243,9 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
     }
 
     screw_together = sp == 3 || sp == 4;
-    snap_together = sp == 5;
+    snap_together_top = sp == 5;
+    snap_together_side = sp == 6;
+    snap_together = snap_together_top || snap_together_side;
     minimal = sp == 0 || sp == 4 || snap_together;
 
     _apply_bottom_padding(
@@ -284,8 +318,12 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
                 cutter_screw_together(grid_size.x, grid_size.y, length);
             }
 
-            if (snap_together) {
+            if (snap_together_top) {
                 cutter_snap_together(grid_size.x, grid_size.y, length);
+            }
+
+            if (snap_together_side) {
+                cutter_snap_together_side(grid_size.x, grid_size.y, length);
             }
 
             if (render_height_limit < baseplate_height_mm) {
@@ -301,10 +339,10 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
 }
 
 function calculate_offset(style_plate, enable_magnet, style_hole) =
-    assert(style_plate >=0 && style_plate <=5)
+    assert(style_plate >=0 && style_plate <=6)
     let (screw_together = style_plate == 3 || style_plate == 4)
     screw_together ? 6.75 :
-    (style_plate==0 || style_plate==5) ? 0 :
+    (style_plate==0 || style_plate==5 || style_plate==6) ? 0 :
     style_plate==1 ? bp_h_bot :
     calculate_offset_skeletonized(enable_magnet, style_hole);
 
@@ -594,23 +632,54 @@ function _bottom_padding_cell_growth(
         _bottom_padding_growth_from_allowed(outer_max.y - hole_max.y, chamfer_height, max_chamfer_height)
     ];
 
+function _bottom_padding_corner_arc(center, radius, start_angle, end_angle, steps) =
+    radius <= 0
+        ? [center]
+        : arc_points(center, radius, start_angle, end_angle, steps);
+
 function _bottom_padding_rounded_rect_points(size, radius, steps=8) =
     let(
-        r = min(radius, min(size) / 2 - TOLLERANCE),
+        raw_radii = is_list(radius) ? radius : [radius, radius, radius, radius],
+        max_radius = max(0, min(size) / 2 - TOLLERANCE),
+        r = [for (corner_radius = raw_radii) min(corner_radius, max_radius)],
         hw = size.x / 2,
         hh = size.y / 2
     )
-    r <= 0 ? [
-        [hw, -hh],
-        [hw, hh],
-        [-hw, hh],
-        [-hw, -hh]
-    ] : concat(
-        arc_points([hw - r, -hh + r], r, -90, 0, steps),
-        arc_points([hw - r, hh - r], r, 0, 90, steps),
-        arc_points([-hw + r, hh - r], r, 90, 180, steps),
-        arc_points([-hw + r, -hh + r], r, 180, 270, steps)
+    concat(
+        _bottom_padding_corner_arc([hw - r[0], -hh + r[0]], r[0], -90, 0, steps),
+        _bottom_padding_corner_arc([hw - r[1], hh - r[1]], r[1], 0, 90, steps),
+        _bottom_padding_corner_arc([-hw + r[2], hh - r[2]], r[2], 90, 180, steps),
+        _bottom_padding_corner_arc([-hw + r[3], -hh + r[3]], r[3], 180, 270, steps)
     );
+
+function _bottom_padding_outer_corner_hole_radius(outer_rib_width, default_radius) =
+    BASEPLATE_OUTER_RADIUS > outer_rib_width
+        ? BASEPLATE_OUTER_RADIUS - outer_rib_width
+        : default_radius;
+
+function _bottom_padding_cell_corner_radii(
+    index,
+    grid_size,
+    default_radius,
+    outer_rib_width
+) =
+    let(
+        outer_corner_radius = _bottom_padding_outer_corner_hole_radius(
+            outer_rib_width,
+            default_radius
+        )
+    )
+    // Ordered like _bottom_padding_rounded_rect_points: BR, TR, TL, BL.
+    [
+        index.x == grid_size.x - 1 && index.y == 0 && !fill_bottom_right_corner
+            ? outer_corner_radius : default_radius,
+        index.x == grid_size.x - 1 && index.y == grid_size.y - 1 && !fill_top_right_corner
+            ? outer_corner_radius : default_radius,
+        index.x == 0 && index.y == grid_size.y - 1 && !fill_top_left_corner
+            ? outer_corner_radius : default_radius,
+        index.x == 0 && index.y == 0 && !fill_bottom_left_corner
+            ? outer_corner_radius : default_radius
+    ];
 
 module _bottom_padding_cell_hole(
     grid_length,
@@ -620,7 +689,8 @@ module _bottom_padding_cell_hole(
     assert(grid_length > 0);
     assert(is_list(growth) && len(growth) == 4);
     assert(min(growth) >= 0);
-    assert(corner_radius >= 0);
+    assert(is_list(corner_radius) ? len(corner_radius) == 4 : corner_radius >= 0);
+    assert(is_list(corner_radius) ? min(corner_radius) >= 0 : true);
 
     top_size = baseplate_inner_size([grid_length, grid_length]);
     grown_size = top_size + [growth[0] + growth[1], growth[2] + growth[3]];
@@ -665,21 +735,27 @@ module _bottom_padding_grid_hole_chamfers(
                 chamfer_height,
                 max_chamfer_height
             );
-
-            translate(center)
-        hull() {
-            translate([0, 0, -chamfer_height])
-            linear_extrude(TOLLERANCE)
-            _bottom_padding_cell_hole(
-                grid_length,
-                growth,
-                bottom_corner_radius
+            corner_radii = _bottom_padding_cell_corner_radii(
+                index,
+                grid_size,
+                bottom_corner_radius,
+                outer_rib_width
             );
 
-            translate([0, 0, -TOLLERANCE])
-            linear_extrude(TOLLERANCE)
-            _bottom_padding_cell_hole(grid_length);
-        }
+            translate(center)
+            hull() {
+                translate([0, 0, -chamfer_height])
+                linear_extrude(TOLLERANCE)
+                _bottom_padding_cell_hole(
+                    grid_length,
+                    growth,
+                    corner_radii
+                );
+
+                translate([0, 0, -TOLLERANCE])
+                linear_extrude(TOLLERANCE)
+                _bottom_padding_cell_hole(grid_length);
+            }
         }
     }
 }
@@ -719,119 +795,17 @@ module _bottom_padding_grid_holes(
                 chamfer_height,
                 max_chamfer_height
             );
+            corner_radii = _bottom_padding_cell_corner_radii(
+                index,
+                grid_size,
+                bottom_corner_radius,
+                target_rib_width
+            );
 
             translate(center)
-            _bottom_padding_cell_hole(grid_length, growth, bottom_corner_radius);
+            _bottom_padding_cell_hole(grid_length, growth, corner_radii);
         }
     }
-}
-
-module cutter_snap_together(gx, gy, size = l_grid) {
-    assert(gx >= 1);
-    assert(gy >= 1);
-
-    if (gx > 1) {
-        for (x = [1:gx-1]) {
-            translate([(-gx/2 + x) * size, -gy * size/2, 0])
-            cutter_snap_connector_edge();
-
-            translate([(-gx/2 + x) * size, gy * size/2, 0])
-            rotate([0, 0, 180])
-            cutter_snap_connector_edge();
-        }
-    }
-
-    if (gy > 1) {
-        for (y = [1:gy-1]) {
-            translate([-gx * size/2, (-gy/2 + y) * size, 0])
-            rotate([0, 0, -90])
-            cutter_snap_connector_edge();
-
-            translate([gx * size/2, (-gy/2 + y) * size, 0])
-            rotate([0, 0, 90])
-            cutter_snap_connector_edge();
-        }
-    }
-}
-
-module cutter_snap_connector_edge() {
-    // Based on the snap connector from this URL:
-    // https://www.printables.com/model/430144-gridfinity-base-with-snap-connectors
-    // The 2D profile below matches the reference connector cutout before it is rotated into
-    // place on each outside edge. In this local sketch, X goes inward from the edge and Y is
-    // height above the bottom of the baseplate.
-    slot_width = 4.2 + 2*TOLLERANCE;
-
-    floor_z = 0.95;
-    top_cap_z = floor_z + 1.85;
-    top_z = max(BASEPLATE_HEIGHT - top_cutoff, top_cap_z) + TOLLERANCE;
-
-    // Extend the cutter mouth past the nominal edge so smaller outer_margin values do not leave
-    // a blocking wall in front of the connector opening.
-    entry_x = -0.10;
-    cutout_depth = 2.65;
-
-    // Unfilleted sketch points from the reference profile. The two rounded transitions are
-    // generated from these corners below instead of storing arc centers and tangent angles.
-    lower_step_x = 0.90;
-    lower_step_top = [lower_step_x, floor_z + 0.555];
-    inner_corner = [1.65, floor_z + 0.92];
-    top_corner = [0.765, top_cap_z];
-
-    arc_steps = 12;
-    bottom_fillet = fillet_arc_points(
-        lower_step_top,
-        inner_corner,
-        top_corner,
-        0.60,
-        arc_steps
-    );
-    top_fillet = fillet_arc_points(
-        inner_corner,
-        top_corner,
-        [0.10, top_cap_z],
-        0.15,
-        6
-    );
-
-    // Local 2D cutter profile, before rotation/extrusion. The the closed outline is subtracted
-    // from the baseplate.
-    //
-    //     Y
-    //     ^
-    //     |   +----------------------+  top_z
-    //     |   |                      |   
-    //     |   +_______               |  top_cap_z
-    //     |            \             |  top_fillet, R0.15
-    //     |             \            |
-    //     |              \           |
-    //     |               )          |  bottom_fillet, R0.60
-    //     |             .'           |
-    //     |          .'              |  lower_step_top
-    //     |          |               |
-    //     |          +---------------+  floor_z
-    //     |
-    //     +----------------------------------------------> X inward
-    //         entry_x                cutout_depth
-    //
-    // The connector-facing opening starts at x=0.10; entry_x only clears material in front
-    // of that opening when outer_margin is smaller than 0.10 mm.
-    // The polygon walks clockwise around the cutter cross-section.
-    profile = concat([
-        [entry_x, top_cap_z],
-        [entry_x, top_z],
-        [cutout_depth, top_z],
-        [cutout_depth, floor_z],
-        [lower_step_x, floor_z],
-        lower_step_top
-    ], bottom_fillet, top_fillet, [
-        [entry_x, top_cap_z]
-    ]);
-
-    translate([-slot_width/2, 0, 0])
-    rotate([90, 0, 90])
-    linear_extrude(slot_width)
-    polygon(profile);
 }
 
 function arc_points(center, radius, start_angle, end_angle, steps) = [
