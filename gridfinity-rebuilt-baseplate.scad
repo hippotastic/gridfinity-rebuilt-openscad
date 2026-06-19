@@ -64,20 +64,20 @@ fity = 0; // [-1:0.1:1]
 
 
 /* [Styles] */
-
 // baseplate styles
 style_plate = 3; // [0: thin, 1:weighted, 2:skeletonized, 3: screw together, 4: screw together minimal, 5: thin snap together top, 6: thin snap together side]
-
-// render the baseplate body
-render_baseplate = true;
-// render a standalone thin snap together side connector
-render_connector = false;
-// render the standalone thin snap together side connector cutout
-render_cutout = false;
-
-
 // hole styles
 style_hole = 0; // [0:none, 1:countersink, 2:counterbore]
+
+/* [Thin Snap Together Top Debug] */
+// render the baseplate body
+render_baseplate = true;
+// render a standalone thin snap together connector
+render_connector = false;
+// render the standalone thin snap together connector cutout
+render_cutout = false;
+debug_top_snap_connector_in_baseplate = false;
+debug_top_snap_connector_section = false;
 
 /* [Magnet Hole] */
 // Baseplate will have holes for 6mm Diameter x 2mm high magnets.
@@ -91,30 +91,84 @@ hole_options = bundle_hole_options(refined_hole=false, magnet_hole=enable_magnet
 
 // ===== IMPLEMENTATION ===== //
 
+// Main baseplate render path. The special style-5 debug branch renders a
+// sectioned baseplate and connector overlay so the top-snap fit can be inspected
+// in place without changing the exported production geometry.
 if (render_baseplate) {
-    color("tomato")
-    gridfinityBaseplate([gridx, gridy], l_grid, [distancex, distancey], style_plate, hole_options, style_hole, [fitx, fity]);
+    if ($preview && style_plate == 5 && debug_top_snap_connector_section) {
+        union() {
+            color("tomato")
+            render(convexity=10)
+            difference() {
+                gridfinityBaseplate([gridx, gridy], l_grid, [distancex, distancey], style_plate, hole_options, style_hole, [fitx, fity]);
+
+                _thin_snap_top_debug_section_cutter(gridx, gridy, l_grid);
+            }
+
+            color("lightgray")
+            render(convexity=10)
+            difference() {
+                _thin_snap_top_debug_connector_in_baseplate(gridx, gridy, l_grid);
+
+                _thin_snap_top_debug_section_cutter(gridx, gridy, l_grid);
+            }
+        }
+    } else {
+        color("tomato")
+        gridfinityBaseplate([gridx, gridy], l_grid, [distancex, distancey], style_plate, hole_options, style_hole, [fitx, fity]);
+
+        if ($preview && style_plate == 5 && debug_top_snap_connector_in_baseplate) {
+            color("lightgray")
+            _thin_snap_top_debug_connector_in_baseplate(gridx, gridy, l_grid);
+        }
+    }
 }
 
+// Optional standalone positive connector. This is useful for test prints and
+// for comparing the printed part against the negative cutout below.
 if (render_connector) {
-    color("lightgray")
-    translate(_thin_snap_side_connector_standalone_translation())
-    _thin_snap_side_connector();
+    color("lightgray") {
+        if (style_plate == 5) {
+            translate(_thin_snap_top_connector_standalone_translation())
+            _thin_snap_top_connector();
+        } else {
+            translate(_thin_snap_side_connector_standalone_translation())
+            _thin_snap_side_connector();
+        }
+    }
 }
 
+// Optional standalone negative cutout. It is translucent in preview so the
+// connector can be visually checked against the clearance envelope.
 if (render_cutout) {
-    color("cornflowerblue", 0.4)
-    translate(_thin_snap_side_cutout_standalone_translation())
-    _thin_snap_side_connector_display(cutout=true);
+    color("cornflowerblue", 0.4) {
+        if (style_plate == 5) {
+            translate(_thin_snap_top_cutout_standalone_translation())
+            _thin_snap_top_connector_display(cutout=true);
+        } else {
+            translate(_thin_snap_side_cutout_standalone_translation())
+            _thin_snap_side_connector_display(cutout=true);
+        }
+    }
 }
 
+// Preview-only overlay: show connector and cutout at the same origin instead of
+// side by side. This makes fit offsets, chamfers, and clearance easier to judge.
 if ($preview && render_connector && render_cutout) {
-    color("lightgray")
-    _thin_snap_side_connector();
+    if (style_plate == 5) {
+        color("lightgray")
+        _thin_snap_top_connector();
 
-    color("cornflowerblue", 0.4)
-    translate([0, 0, _thin_snap_side_cutout_overlay_z_offset()])
-    _thin_snap_side_connector_display(cutout=true);
+        color("cornflowerblue", 0.4)
+        _thin_snap_top_connector_display(cutout=true);
+    } else {
+        color("lightgray")
+        _thin_snap_side_connector();
+
+        color("cornflowerblue", 0.4)
+        translate([0, 0, _thin_snap_side_cutout_overlay_z_offset()])
+        _thin_snap_side_connector_display(cutout=true);
+    }
 }
 
 // ===== CONSTRUCTION ===== //
@@ -333,6 +387,10 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
                     size_mm.y + 2*TOLLERANCE,
                     baseplate_height_mm - render_height_limit + TOLLERANCE
                 ]);
+            }
+
+            if ($preview && snap_together_top && debug_top_snap_connector_section) {
+                _thin_snap_top_debug_section_cutter(grid_size.x, grid_size.y, length);
             }
         }
     }
