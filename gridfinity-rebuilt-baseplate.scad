@@ -21,6 +21,12 @@ include <src/core/gridfinity-baseplate-thin-snap-side.scad>
 $fa = 2;
 $fs = 0.10;
 
+/* [Styles] */
+// baseplate styles
+style_plate = 3; // [0: thin, 1:weighted, 2:skeletonized, 3: screw together, 4: screw together minimal, 5: thin snap together top, 6: thin snap together side]
+// hole styles
+style_hole = 0; // [0:none, 1:countersink, 2:counterbore]
+
 /* [General Settings] */
 // number of bases along x-axis
 gridx = 1;
@@ -34,11 +40,28 @@ bottom_padding = 0.35; // [0:0.05:20]
 efficient_bottom_padding = true;
 // margin removed from each outside edge
 outer_margin = 0.10; // [0:0.01:0.50]
+
 /* [Filled Corners - Reduces radius of selected corners] */
 fill_top_left_corner = false;
 fill_top_right_corner = false;
 fill_bottom_right_corner = false;
 fill_bottom_left_corner = false;
+
+/* [Sloped Bottom Padding - Angles edge walls to achieve desired margin] */
+top_edge_slope = 0.00; // [0:0.05:10]
+right_edge_slope = 0.00; // [0:0.05:10]
+bottom_edge_slope = 0.00; // [0:0.05:10]
+left_edge_slope = 0.00; // [0:0.05:10]
+
+/* [Thin Snap Together Top Debug] */
+// render the baseplate body
+render_baseplate = true;
+// render a standalone thin snap together connector
+render_connector = false;
+// render the standalone thin snap together connector cutout
+render_cutout = false;
+debug_top_snap_connector_in_baseplate = false;
+debug_top_snap_connector_section = false;
 
 /* [Screw Together Settings - Defaults work for M3 and 4-40] */
 // screw diameter
@@ -61,23 +84,6 @@ distancey = 0;
 fitx = 0; // [-1:0.1:1]
 // where to align extra space along y
 fity = 0; // [-1:0.1:1]
-
-
-/* [Styles] */
-// baseplate styles
-style_plate = 3; // [0: thin, 1:weighted, 2:skeletonized, 3: screw together, 4: screw together minimal, 5: thin snap together top, 6: thin snap together side]
-// hole styles
-style_hole = 0; // [0:none, 1:countersink, 2:counterbore]
-
-/* [Thin Snap Together Top Debug] */
-// render the baseplate body
-render_baseplate = true;
-// render a standalone thin snap together connector
-render_connector = false;
-// render the standalone thin snap together connector cutout
-render_cutout = false;
-debug_top_snap_connector_in_baseplate = false;
-debug_top_snap_connector_section = false;
 
 /* [Magnet Hole] */
 // Baseplate will have holes for 6mm Diameter x 2mm high magnets.
@@ -205,6 +211,14 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
         "bottom_padding may not be negative.");
     assert(is_bool(efficient_bottom_padding),
         "efficient_bottom_padding must be true or false.");
+    assert(top_edge_slope >= 0 && top_edge_slope <= 10,
+        "top_edge_slope must be between 0 and 10 mm.");
+    assert(right_edge_slope >= 0 && right_edge_slope <= 10,
+        "right_edge_slope must be between 0 and 10 mm.");
+    assert(bottom_edge_slope >= 0 && bottom_edge_slope <= 10,
+        "bottom_edge_slope must be between 0 and 10 mm.");
+    assert(left_edge_slope >= 0 && left_edge_slope <= 10,
+        "left_edge_slope must be between 0 and 10 mm.");
     assert(outer_margin >= 0,
         "outer_margin may not be negative.");
     assert(is_bool(fill_top_left_corner),
@@ -301,6 +315,10 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
     snap_together_side = sp == 6;
     snap_together = snap_together_top || snap_together_side;
     minimal = sp == 0 || sp == 4 || snap_together;
+    explicit_bottom_padding = sp == 0 || snap_together;
+    edge_slopes = explicit_bottom_padding
+        ? [top_edge_slope, right_edge_slope, bottom_edge_slope, left_edge_slope]
+        : [0, 0, 0, 0];
 
     _apply_bottom_padding(
         bottom_padding_delta,
@@ -309,7 +327,10 @@ module gridfinityBaseplate(grid_size_bases, length, min_size_mm, sp, hole_option
         efficient_bottom_padding && (sp == 0 || snap_together),
         grid_size,
         length,
-        baseplate_height_mm
+        baseplate_height_mm,
+        corner_radii,
+        edge_slopes,
+        explicit_bottom_padding
     ) {
         difference() {
             union() {
@@ -518,7 +539,15 @@ module _apply_bottom_padding(
     efficient=false,
     grid_size=[0, 0],
     grid_length=l_grid,
-    baseplate_height=BASEPLATE_HEIGHT
+    baseplate_height=BASEPLATE_HEIGHT,
+    corner_radii=[
+        BASEPLATE_OUTER_RADIUS,
+        BASEPLATE_OUTER_RADIUS,
+        BASEPLATE_OUTER_RADIUS,
+        BASEPLATE_OUTER_RADIUS
+    ],
+    edge_slopes=[0, 0, 0, 0],
+    explicit_grid=false
 ) {
     assert(is_num(bottom_padding_delta));
     assert(is_list(start_point) && len(start_point) == 3);
@@ -527,6 +556,11 @@ module _apply_bottom_padding(
     assert(is_list(grid_size) && len(grid_size) == 2);
     assert(grid_length > 0);
     assert(baseplate_height >= BASEPLATE_HEIGHT);
+    assert(is_list(corner_radii) && len(corner_radii) == 4);
+    assert(min(corner_radii) >= 0);
+    assert(is_list(edge_slopes) && len(edge_slopes) == 4);
+    assert(min(edge_slopes) >= 0);
+    assert(is_bool(explicit_grid));
 
     if (bottom_padding_delta < 0) {
         trim_height = -bottom_padding_delta;
@@ -554,7 +588,10 @@ module _apply_bottom_padding(
                 grid_length,
                 baseplate_height,
                 start_point,
-                size
+                size,
+                corner_radii,
+                edge_slopes,
+                explicit_grid
             )
             children();
         }
@@ -570,7 +607,15 @@ module _extrude_bottom_padding(
     grid_length=l_grid,
     baseplate_height=BASEPLATE_HEIGHT,
     start_point=[0, 0, 0],
-    size=[0, 0, 0]
+    size=[0, 0, 0],
+    corner_radii=[
+        BASEPLATE_OUTER_RADIUS,
+        BASEPLATE_OUTER_RADIUS,
+        BASEPLATE_OUTER_RADIUS,
+        BASEPLATE_OUTER_RADIUS
+    ],
+    edge_slopes=[0, 0, 0, 0],
+    explicit_grid=false
 ) {
     assert(padding_height > 0);
     assert(is_bool(efficient));
@@ -579,8 +624,25 @@ module _extrude_bottom_padding(
     assert(baseplate_height >= BASEPLATE_HEIGHT);
     assert(is_list(start_point) && len(start_point) == 3);
     assert(is_list(size) && len(size) == 3);
+    assert(is_list(corner_radii) && len(corner_radii) == 4);
+    assert(min(corner_radii) >= 0);
+    assert(is_list(edge_slopes) && len(edge_slopes) == 4);
+    assert(min(edge_slopes) >= 0);
+    assert(is_bool(explicit_grid));
 
-    if (efficient) {
+    if (explicit_grid) {
+        _extrude_grid_bottom_padding(
+            padding_height,
+            efficient,
+            grid_size,
+            grid_length,
+            baseplate_height,
+            start_point,
+            size,
+            corner_radii,
+            edge_slopes
+        );
+    } else if (efficient) {
         // The projected bottom-padding cutter starts this far inside each grid cell edge.
         // Expanding adjacent cell openings equally leaves target-width ribs between them.
         cell_hole_edge_inset = BASEPLATE_OUTER_RADIUS - BASEPLATE_INNER_RADIUS;
@@ -643,6 +705,358 @@ module _extrude_bottom_padding(
     }
 }
 
+module _extrude_grid_bottom_padding(
+    padding_height,
+    efficient=false,
+    grid_size=[0, 0],
+    grid_length=l_grid,
+    baseplate_height=BASEPLATE_HEIGHT,
+    start_point=[0, 0, 0],
+    size=[0, 0, 0],
+    corner_radii=[
+        BASEPLATE_OUTER_RADIUS,
+        BASEPLATE_OUTER_RADIUS,
+        BASEPLATE_OUTER_RADIUS,
+        BASEPLATE_OUTER_RADIUS
+    ],
+    edge_slopes=[0, 0, 0, 0]
+) {
+    assert(padding_height > 0);
+    assert(is_bool(efficient));
+    assert(is_list(grid_size) && len(grid_size) == 2);
+    assert(grid_length > 0);
+    assert(baseplate_height >= BASEPLATE_HEIGHT);
+    assert(is_list(start_point) && len(start_point) == 3);
+    assert(is_list(size) && len(size) == 3);
+    assert(is_list(corner_radii) && len(corner_radii) == 4);
+    assert(min(corner_radii) >= 0);
+    assert(is_list(edge_slopes) && len(edge_slopes) == 4);
+    assert(min(edge_slopes) >= 0);
+
+    cell_hole_edge_inset = BASEPLATE_OUTER_RADIUS - BASEPLATE_INNER_RADIUS;
+    rib_width_at_padding = 2*cell_hole_edge_inset;
+    target_rib_width = efficient ? 1.2 : cell_hole_edge_inset;
+    max_chamfer_height = efficient
+        ? max(0, (rib_width_at_padding - target_rib_width) / 2)
+        : 0;
+    bottom_corner_radius = efficient ? target_rib_width / 2 : BASEPLATE_INNER_RADIUS;
+    chamfer_height = efficient ? min(max_chamfer_height, padding_height) : 0;
+
+    if (_bottom_padding_has_edge_slopes(edge_slopes)) {
+        echo(str(
+            "Bottom padding edge slope angles (top/right/bottom/left in degrees): ",
+            _bottom_padding_edge_slope_angles(edge_slopes, padding_height)
+        ));
+    }
+
+    // Build thin/minimal bottom padding from parameters instead of projecting the
+    // already-cut baseplate. This keeps original baseplate cutters from changing
+    // the added padding below the Gridfinity profile.
+    render()
+    difference() {
+        _bottom_padding_outer_volume(
+            padding_height,
+            start_point,
+            size,
+            corner_radii,
+            edge_slopes
+        );
+
+        _bottom_padding_grid_hole_loft_cutters(
+            padding_height,
+            grid_size,
+            grid_length,
+            baseplate_height,
+            start_point,
+            size,
+            target_rib_width,
+            chamfer_height,
+            max_chamfer_height,
+            bottom_corner_radius,
+            edge_slopes
+        );
+    }
+}
+
+module _bottom_padding_outer_volume(
+    padding_height,
+    start_point,
+    size,
+    corner_radii,
+    edge_slopes=[0, 0, 0, 0]
+) {
+    assert(padding_height > 0);
+    assert(is_list(start_point) && len(start_point) == 3);
+    assert(is_list(size) && len(size) == 3);
+    assert(is_list(corner_radii) && len(corner_radii) == 4);
+    assert(is_list(edge_slopes) && len(edge_slopes) == 4);
+    assert(min(edge_slopes) >= 0);
+
+    if (_bottom_padding_has_edge_slopes(edge_slopes)) {
+        hull() {
+            translate([0, 0, -padding_height])
+            linear_extrude(TOLLERANCE)
+            _bottom_padding_outer_footprint(
+                start_point,
+                size,
+                corner_radii,
+                edge_slopes
+            );
+
+            linear_extrude(TOLLERANCE)
+            _bottom_padding_outer_footprint(
+                start_point,
+                size,
+                corner_radii
+            );
+        }
+    } else {
+        translate([0, 0, -padding_height])
+        linear_extrude(padding_height + TOLLERANCE)
+        _bottom_padding_outer_footprint(
+            start_point,
+            size,
+            corner_radii
+        );
+    }
+}
+
+module _bottom_padding_outer_footprint(
+    start_point,
+    size,
+    corner_radii,
+    edge_offsets=[0, 0, 0, 0]
+) {
+    assert(is_list(start_point) && len(start_point) == 3);
+    assert(is_list(size) && len(size) == 3);
+    assert(is_list(corner_radii) && len(corner_radii) == 4);
+    assert(is_list(edge_offsets) && len(edge_offsets) == 4);
+    assert(min(edge_offsets) >= 0);
+
+    footprint_size = [
+        size.x - edge_offsets[1] - edge_offsets[3],
+        size.y - edge_offsets[0] - edge_offsets[2]
+    ];
+    footprint_center = [
+        start_point.x + size.x/2 + (edge_offsets[3] - edge_offsets[1]) / 2,
+        start_point.y + size.y/2 + (edge_offsets[2] - edge_offsets[0]) / 2
+    ];
+    assert(footprint_size.x > 0 && footprint_size.y > 0,
+        "edge slopes are too large for the bottom-padding footprint.");
+
+    translate(footprint_center)
+    polygon(_bottom_padding_rounded_rect_points(
+        footprint_size,
+        _bottom_padding_footprint_corner_radii(corner_radii)
+    ));
+}
+
+module _bottom_padding_grid_hole_loft_cutters(
+    padding_height,
+    grid_size,
+    grid_length,
+    baseplate_height,
+    start_point,
+    size,
+    target_rib_width,
+    chamfer_height,
+    max_chamfer_height,
+    bottom_corner_radius,
+    edge_slopes
+) {
+    assert(padding_height > 0);
+    assert(is_list(grid_size) && len(grid_size) == 2);
+    assert(grid_length > 0);
+    assert(baseplate_height >= BASEPLATE_HEIGHT);
+    assert(is_list(start_point) && len(start_point) == 3);
+    assert(is_list(size) && len(size) == 3);
+    assert(target_rib_width >= 0);
+    assert(chamfer_height >= 0);
+    assert(max_chamfer_height >= 0);
+    assert(bottom_corner_radius >= 0);
+    assert(is_list(edge_slopes) && len(edge_slopes) == 4);
+    assert(min(edge_slopes) >= 0);
+
+    depths = _bottom_padding_transition_depths(padding_height, chamfer_height);
+
+    for (x = [0:grid_size.x-1]) {
+        for (y = [0:grid_size.y-1]) {
+            index = [x, y];
+
+            for (i = [0:len(depths)-2]) {
+                hull() {
+                    _bottom_padding_cell_hole_layer(
+                        index,
+                        -depths[i],
+                        depths[i],
+                        padding_height,
+                        grid_size,
+                        grid_length,
+                        baseplate_height,
+                        start_point,
+                        size,
+                        target_rib_width,
+                        chamfer_height,
+                        max_chamfer_height,
+                        bottom_corner_radius,
+                        edge_slopes
+                    );
+
+                    _bottom_padding_cell_hole_layer(
+                        index,
+                        -depths[i+1],
+                        depths[i+1],
+                        padding_height,
+                        grid_size,
+                        grid_length,
+                        baseplate_height,
+                        start_point,
+                        size,
+                        target_rib_width,
+                        chamfer_height,
+                        max_chamfer_height,
+                        bottom_corner_radius,
+                        edge_slopes
+                    );
+                }
+            }
+        }
+    }
+}
+
+module _bottom_padding_cell_hole_layer(
+    index,
+    z,
+    depth,
+    padding_height,
+    grid_size,
+    grid_length,
+    baseplate_height,
+    start_point,
+    size,
+    target_rib_width,
+    chamfer_height,
+    max_chamfer_height,
+    bottom_corner_radius,
+    edge_slopes
+) {
+    assert(is_list(index) && len(index) == 2);
+    assert(depth >= 0);
+    assert(padding_height > 0);
+
+    translate([0, 0, z])
+    linear_extrude(TOLLERANCE)
+    _bottom_padding_cell_hole_at_depth(
+        index,
+        depth,
+        padding_height,
+        grid_size,
+        grid_length,
+        baseplate_height,
+        start_point,
+        size,
+        target_rib_width,
+        chamfer_height,
+        max_chamfer_height,
+        bottom_corner_radius,
+        edge_slopes
+    );
+}
+
+module _bottom_padding_cell_hole_at_depth(
+    index,
+    depth,
+    padding_height,
+    grid_size,
+    grid_length,
+    baseplate_height,
+    start_point=[0, 0, 0],
+    size=[0, 0, 0],
+    target_rib_width=0,
+    chamfer_height=0,
+    max_chamfer_height=0,
+    bottom_corner_radius=0,
+    edge_slopes=[0, 0, 0, 0]
+) {
+    assert(is_list(index) && len(index) == 2);
+    assert(depth >= 0);
+    assert(padding_height > 0);
+    assert(is_list(grid_size) && len(grid_size) == 2);
+    assert(grid_length > 0);
+    assert(baseplate_height >= BASEPLATE_HEIGHT);
+    assert(is_list(start_point) && len(start_point) == 3);
+    assert(is_list(size) && len(size) == 3);
+    assert(target_rib_width >= 0);
+    assert(chamfer_height >= 0);
+    assert(max_chamfer_height >= 0);
+    assert(bottom_corner_radius >= 0);
+    assert(is_list(edge_slopes) && len(edge_slopes) == 4);
+    assert(min(edge_slopes) >= 0);
+
+    effective_chamfer_height = min(depth, chamfer_height);
+    edge_offsets = _bottom_padding_edge_offsets_at_depth(
+        edge_slopes,
+        depth,
+        padding_height
+    );
+
+    center = _bottom_padding_cell_center(index, grid_size, grid_length);
+    growth = _bottom_padding_cell_growth(
+        index,
+        grid_size,
+        grid_length,
+        start_point,
+        size,
+        target_rib_width,
+        effective_chamfer_height,
+        max_chamfer_height
+    ) + _bottom_padding_cell_edge_slope_growth(
+        index,
+        grid_size,
+        edge_offsets
+    );
+    corner_radii = effective_chamfer_height > 0
+        ? _bottom_padding_cell_corner_radii(
+            index,
+            grid_size,
+            bottom_corner_radius,
+            target_rib_width
+        )
+        : BASEPLATE_INNER_RADIUS;
+
+    translate(center)
+    _bottom_padding_cell_hole(grid_length, growth, corner_radii);
+}
+
+function _bottom_padding_has_edge_slopes(edge_slopes) =
+    max(edge_slopes) > 0;
+
+function _bottom_padding_edge_slope_angles(edge_slopes, padding_height) = [
+    for (edge_slope = edge_slopes) atan(edge_slope / padding_height)
+];
+
+function _bottom_padding_transition_depths(padding_height, chamfer_height) =
+    chamfer_height > 0 && chamfer_height < padding_height
+        ? [0, chamfer_height, padding_height]
+        : [0, padding_height];
+
+function _bottom_padding_edge_offsets_at_depth(edge_slopes, depth, padding_height) =
+    edge_slopes * (depth / padding_height);
+
+function _bottom_padding_cell_edge_slope_growth(index, grid_size, edge_offsets) = [
+    index.x == 0 ? -edge_offsets[3] : 0,
+    index.x == grid_size.x - 1 ? -edge_offsets[1] : 0,
+    index.y == 0 ? -edge_offsets[2] : 0,
+    index.y == grid_size.y - 1 ? -edge_offsets[0] : 0
+];
+
+function _bottom_padding_footprint_corner_radii(corner_radii) = [
+    corner_radii[2],
+    corner_radii[1],
+    corner_radii[0],
+    corner_radii[3]
+];
+
 module _bottom_padding_footprint(inset=0) {
     assert(inset >= 0);
 
@@ -695,20 +1109,28 @@ function _bottom_padding_corner_arc(center, radius, start_angle, end_angle, step
         ? [center]
         : arc_points(center, radius, start_angle, end_angle, steps);
 
-function _bottom_padding_rounded_rect_points(size, radius, steps=8) =
+function _bottom_padding_rounded_rect_points(size, radius) =
     let(
         raw_radii = is_list(radius) ? radius : [radius, radius, radius, radius],
         max_radius = max(0, min(size) / 2 - TOLLERANCE),
         r = [for (corner_radius = raw_radii) min(corner_radius, max_radius)],
+        arc_steps = [for (corner_radius = r) _bottom_padding_quarter_arc_steps(corner_radius)],
         hw = size.x / 2,
         hh = size.y / 2
     )
     concat(
-        _bottom_padding_corner_arc([hw - r[0], -hh + r[0]], r[0], -90, 0, steps),
-        _bottom_padding_corner_arc([hw - r[1], hh - r[1]], r[1], 0, 90, steps),
-        _bottom_padding_corner_arc([-hw + r[2], hh - r[2]], r[2], 90, 180, steps),
-        _bottom_padding_corner_arc([-hw + r[3], -hh + r[3]], r[3], 180, 270, steps)
+        _bottom_padding_corner_arc([hw - r[0], -hh + r[0]], r[0], -90, 0, arc_steps[0]),
+        _bottom_padding_corner_arc([hw - r[1], hh - r[1]], r[1], 0, 90, arc_steps[1]),
+        _bottom_padding_corner_arc([-hw + r[2], hh - r[2]], r[2], 90, 180, arc_steps[2]),
+        _bottom_padding_corner_arc([-hw + r[3], -hh + r[3]], r[3], 180, 270, arc_steps[3])
     );
+
+function _bottom_padding_quarter_arc_steps(radius) =
+    max(1, ceil(_bottom_padding_circle_fragments(radius) / 4));
+
+function _bottom_padding_circle_fragments(radius) =
+    $fn > 0 ? max($fn, 3)
+    : ceil(max(5, min(360 / max($fa, 0.01), 2 * 3.14159 * radius / max($fs, 0.01))));
 
 function _bottom_padding_outer_corner_hole_radius(outer_rib_width, default_radius) =
     BASEPLATE_OUTER_RADIUS > outer_rib_width
@@ -746,13 +1168,14 @@ module _bottom_padding_cell_hole(
 ) {
     assert(grid_length > 0);
     assert(is_list(growth) && len(growth) == 4);
-    assert(min(growth) >= 0);
     assert(is_list(corner_radius) ? len(corner_radius) == 4 : corner_radius >= 0);
     assert(is_list(corner_radius) ? min(corner_radius) >= 0 : true);
 
     top_size = baseplate_inner_size([grid_length, grid_length]);
     grown_size = top_size + [growth[0] + growth[1], growth[2] + growth[3]];
     offset = [(growth[1] - growth[0]) / 2, (growth[3] - growth[2]) / 2];
+    assert(grown_size.x > 0 && grown_size.y > 0,
+        "_bottom_padding_cell_hole: growth shrinks the hole below zero.");
 
     translate(offset)
     polygon(_bottom_padding_rounded_rect_points(grown_size, corner_radius));
